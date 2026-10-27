@@ -2455,7 +2455,11 @@ with tab3:
             "- El **quiebre proyectado** recorre día a día la demanda proyectada hasta agotar el stock disponible."
         )
 
+# ===========================================================================
+# TAB 4: Alertas
+# ===========================================================================
 with tab4:
+    # 1. Quiebres próximos
     st.subheader("Quiebres próximos")
     ya_qs = df[(df["estado"] == "QS") & (df["tasa_fc_dia"] > 0)]
     umbral_q = st.slider("Mostrar fármacos que se quedan sin stock en menos de (días)", 7, 180, 30, key="q_dias_t4")
@@ -2492,6 +2496,7 @@ with tab4:
                 "compra": st.column_config.NumberColumn("Compra sugerida", format="%.0f"),
                 "seguimiento": "Seguimiento"})
 
+    # 2. Cenabast en riesgo
     st.subheader("Cenabast con problemas y stock bajo")
     riesgo = df[df["estado_cenabast"].isin(CEN_RIESGO)]
     cz = riesgo[riesgo["estado"].isin(["QS", "CR"])].sort_values("consumo_prom", ascending=False)
@@ -2514,6 +2519,7 @@ with tab4:
                 "aut_dias": st.column_config.NumberColumn("Autonomía (días)", format="%.1f"),
                 "consumo_prom": st.column_config.NumberColumn("Consumo mensual prom.", format="%.0f")})
 
+    # 3. Sobre stock
     st.subheader("Sobre stock y dinero inmovilizado")
     ss = df[df["estado"] == "SS"].copy()
     ss["exceso_u"] = np.clip(ss["stock_sin"] - ss["stock_ideal"], 0, None)
@@ -2545,6 +2551,7 @@ with tab4:
             "exceso_u": st.column_config.NumberColumn("Exceso (unidades)", format="%.0f"),
             "exceso_val": st.column_config.NumberColumn("Exceso ($)", format="%.0f")})
 
+    # 4. Convenios
     st.subheader("Convenios por vencer o con poco saldo")
     u_conv = st.slider("Alertar convenios que vencen en menos de (días)", 30, 365, 180, key="u_conv")
     u_cob = st.slider("Alertar saldo que cubre menos de (meses)", 1, 12, 3, key="u_cob")
@@ -2568,54 +2575,35 @@ with tab4:
             "conv_vcto": st.column_config.DateColumn("Vence", format="DD/MM/YYYY"),
             "conv_vcto_dias": st.column_config.NumberColumn("Días al vencimiento", format="%.0f")})
 
-    st.subheader("Lotes por vencer")
-    if venc.empty:
-        st.info("La hoja VENCIMIENTOS no tiene lotes.")
-    else:
-        v = venc.copy()
-        v["dias"] = (v["Fecha Vencimiento"] - fecha_stock_ts).dt.days
-        tasa = b.set_index("codigo")["tasa_fc_dia"]
-        v["tasa"] = v["Código"].map(tasa).fillna(0)
-        v["consumible"] = v["tasa"] * v["dias"].clip(lower=0)
-        v["en_riesgo"] = np.ceil(np.clip(v["Cantidad"] - v["consumible"], 0, None))
-        v["vencimiento_val"] = v["en_riesgo"] * v["Precio Lote"]
-        v["situacion"] = np.where(v["dias"] < 0, "Vencido",
-                                  np.where(v["en_riesgo"] > 0, "En riesgo de pérdida", "Se alcanza a consumir"))
-        e1, e2, e3 = st.columns(3)
-        with e1:
-            kpi("Lotes listados", n0(len(v)), "Hoja VENCIMIENTOS", "#E8890C")
-        with e2:
-            kpi("Lotes en riesgo de pérdida", n0((v["situacion"] != "Se alcanza a consumir").sum()),
-                "Vencidos o que no alcanzan a consumirse", "#B3261E")
-        with e3:
-            kpi("Valor en riesgo", clp(v["vencimiento_val"].sum()), "Unidades que no se consumirían a tiempo", "#B3261E")
-        st.dataframe(
-            v.sort_values("dias")[["Bodega", "Producto", "Lote", "Fecha Vencimiento", "dias", "Cantidad",
-                                   "consumible", "en_riesgo", "vencimiento_val", "situacion"]],
-            hide_index=True,
-            column_config={
-                "Fecha Vencimiento": st.column_config.DateColumn("Vence", format="DD/MM/YYYY"),
-                "dias": st.column_config.NumberColumn("Días restantes", format="%.0f"),
-                "consumible": st.column_config.NumberColumn("Se consumiría", format="%.0f"),
-                "en_riesgo": st.column_config.NumberColumn("En riesgo (unidades)", format="%.0f"),
-                "vencimiento_val": st.column_config.NumberColumn("Valor en riesgo ($)", format="%.0f"),
-                "situacion": "Situación"})
-
-    st.subheader("Vencimientos de los fármacos de mayor demanda")
-    if archivos["vencimientos"] is None:
-        st.info("Sube el reporte de stock por lote («Reporte de Stock… productos que vencen en los próximos N días») "
-                "para ver qué fármacos de mayor demanda están por vencer.")
+    # 5. Vencimientos de lotes de los FÁRMACOS DE MAYOR DEMANDA (¡Nuevo y detallado igual que insumos!)
+    st.subheader("Vencimientos por lote (Fármacos de mayor demanda)")
+    if archivos["vencimientos"] is None and venc.empty:
+        st.info("Sube el reporte de stock por lote para ver qué fármacos de mayor demanda están por vencer.")
     else:
         try:
-            vl_f, meta_vf = load_vencimientos(archivos["vencimientos"][1])
+            if not venc.empty:
+                vl_f = venc.copy()
+                meta_vf = {"fecha": fecha_stock, "filtro": "Próximos meses"}
+            else:
+                vl_f, meta_vf = load_vencimientos(archivos["vencimientos"][1])
         except Exception as exc:
             st.error(f"No pude leer el reporte de vencimientos: {exc}")
         else:
             ref_vf = pd.Timestamp(meta_vf["fecha"] or date.today())
-            lots_f = riesgo_fefo(vl_f[vl_f["codigo"].isin(set(b["codigo"]))],
-                                 b.set_index("codigo")["tasa_fc_dia"], ref_vf)
-            render_venc_top(lots_f, meta_vf, df.rename(columns={"descripcion": "producto"}),
-                            "farm", "fármacos", ref_vf)
+            # Renombrar columnas si vienen del archivo crudo
+            if "Código" in vl_f.columns:
+                vl_f = vl_f.rename(columns={"Código": "codigo", "Fecha Vencimiento": "vence", "Cantidad": "cantidad", "Precio Lote": "precio_lote"})
+            if "Fecha Vencimiento" in vl_f.columns:
+                vl_f["vence"] = pd.to_datetime(vl_f["Fecha Vencimiento"], errors="coerce")
+            
+            lots_f = riesgo_fefo(
+                vl_f[vl_f["codigo"].isin(set(b["codigo"]))],
+                b.set_index("codigo")["tasa_fc_dia"], 
+                ref_vf
+            )
+            # Preparamos un DataFrame de fármacos renombrando 'descripcion' a 'producto' para render_venc_top
+            prod_farm = df.rename(columns={"descripcion": "producto"}).copy()
+            render_venc_top(lots_f, meta_vf, prod_farm, "farm", "fármacos", ref_vf)
 
 with tab5:
     render_insumos(archivos["stock_insumos"], archivos["salidas_insumos"], data["licit"],
